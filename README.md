@@ -9,9 +9,8 @@ $ ./components/bonjour/discover
 Usage of ./components/bonjour/discover:
   -debug=false: Enable debug mode
   -json=false: Print component documentation in JSON
-  -port.err="": Component's output port endpoint
-  -port.out="": Component's input port endpoint
   -port.options="": Component's input port endpoint
+  -port.out="": Component's output port endpoint
 ```
 
 ### Registration component
@@ -21,8 +20,6 @@ $ ./components/bonjour/register
 Usage of ./components/bonjour/register:
   -debug=false: Enable debug mode
   -json=false: Print component documentation in JSON
-  -port.err="": Component's output port endpoint
-  -port.out="": Component's input port endpoint
   -port.options="": Component's input port endpoint
 ```
 
