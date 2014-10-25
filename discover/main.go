@@ -9,10 +9,10 @@ import (
 	"os"
 	"syscall"
 
-	zmq "github.com/alecthomas/gozmq"
 	"github.com/cascades-fbp/cascades/components/utils"
 	"github.com/cascades-fbp/cascades/runtime"
 	"github.com/oleksandr/bonjour"
+	zmq "github.com/pebbe/zmq4"
 )
 
 var (
@@ -23,8 +23,8 @@ var (
 	debug          = flag.Bool("debug", false, "Enable debug mode")
 
 	// Internal
-	context         *zmq.Context
 	inPort, outPort *zmq.Socket
+	resolver        *bonjour.Resolver
 	err             error
 )
 
@@ -40,16 +40,13 @@ func validateArgs() {
 }
 
 func openPorts() {
-	context, err = zmq.NewContext()
-	utils.AssertError(err)
-
-	inPort, err = utils.CreateInputPort(context, *inputEndpoint)
+	inPort, err = utils.CreateInputPort(*inputEndpoint)
 	utils.AssertError(err)
 }
 
 func closePorts() {
 	inPort.Close()
-	context.Close()
+	zmq.Term()
 }
 
 func main() {
@@ -73,12 +70,15 @@ func main() {
 	openPorts()
 	defer closePorts()
 
-	ch := utils.HandleInterruption()
+	resolver, err = bonjour.NewResolver(nil)
+	utils.AssertError(err)
+
+	exitCh := utils.HandleInterruption()
 
 	log.Println("Waiting for configuration IP...")
 	var options *bonjour.ServiceRecord
 	for {
-		ip, err := inPort.RecvMultipart(0)
+		ip, err := inPort.RecvMessageBytes(0)
 		if err != nil {
 			log.Println("Error receiving IP:", err.Error())
 			continue
@@ -96,9 +96,8 @@ func main() {
 
 	entries := make(chan *bonjour.ServiceEntry)
 
-	log.Println("Started...")
-	go func(context *zmq.Context, endpoint string, entries chan *bonjour.ServiceEntry) {
-		outPort, err = utils.CreateOutputPort(context, endpoint)
+	go func(endpoint string, entries chan *bonjour.ServiceEntry, exitCh chan os.Signal) {
+		outPort, err = utils.CreateOutputPort(endpoint)
 		utils.AssertError(err)
 		defer outPort.Close()
 
@@ -108,14 +107,20 @@ func main() {
 				log.Println("Error encoding entry:", err.Error())
 				continue
 			}
-			outPort.SendMultipart(runtime.NewPacket(data), 0)
+			outPort.SendMessage(runtime.NewPacket(data))
 		}
 
-	}(context, *outputEndpoint, entries)
+	}(*outputEndpoint, entries, exitCh)
 
-	err = bonjour.Browse(options.Service, options.Domain, entries, nil)
+	err = resolver.Browse(options.Service, options.Domain, entries)
 	if err != nil {
-		ch <- syscall.SIGTERM
+		exitCh <- syscall.SIGTERM
+	} else {
+		log.Println("Started...")
+		select {
+		case <-exitCh:
+			os.Exit(0)
+		}
 	}
 
 }
