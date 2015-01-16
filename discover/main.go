@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"syscall"
+	"time"
 
 	"github.com/cascades-fbp/cascades/components/utils"
 	"github.com/cascades-fbp/cascades/runtime"
@@ -24,6 +25,7 @@ var (
 
 	// Internal
 	inPort, outPort *zmq.Socket
+	outCh           chan bool
 	resolver        *bonjour.Resolver
 	err             error
 )
@@ -40,12 +42,16 @@ func validateArgs() {
 }
 
 func openPorts() {
-	inPort, err = utils.CreateInputPort(*inputEndpoint)
+	inPort, err = utils.CreateInputPort("", *inputEndpoint, nil)
+	utils.AssertError(err)
+
+	outPort, err = utils.CreateOutputPort("bonjour/discover.out", *outputEndpoint, outCh)
 	utils.AssertError(err)
 }
 
 func closePorts() {
 	inPort.Close()
+	outPort.Close()
 	zmq.Term()
 }
 
@@ -67,13 +73,36 @@ func main() {
 
 	validateArgs()
 
+	exitCh := utils.HandleInterruption()
+	outCh = make(chan bool)
+
 	openPorts()
 	defer closePorts()
 
-	resolver, err = bonjour.NewResolver(nil)
-	utils.AssertError(err)
+	waitCh := make(chan bool)
+	go func() {
+		for {
+			v := <-outCh
+			if v && waitCh != nil {
+				waitCh <- true
+			}
+			if !v {
+				log.Println("OUT port is closed. Interrupting execution")
+				exitCh <- syscall.SIGTERM
+				break
+			}
+		}
+	}()
 
-	exitCh := utils.HandleInterruption()
+	log.Println("Waiting for port connections to establish... ")
+	select {
+	case <-waitCh:
+		log.Println("Output port connected")
+		waitCh = nil
+	case <-time.Tick(30 * time.Second):
+		log.Println("Timeout: port connections were not established within provided interval")
+		os.Exit(1)
+	}
 
 	log.Println("Waiting for configuration IP...")
 	var options *bonjour.ServiceRecord
@@ -94,33 +123,21 @@ func main() {
 		break
 	}
 
+	resolver, err = bonjour.NewResolver(nil)
+	utils.AssertError(err)
+
 	entries := make(chan *bonjour.ServiceEntry)
-
-	go func(endpoint string, entries chan *bonjour.ServiceEntry, exitCh chan os.Signal) {
-		outPort, err = utils.CreateOutputPort(endpoint)
-		utils.AssertError(err)
-		defer outPort.Close()
-
-		for e := range entries {
-			data, err := json.Marshal(e)
-			if err != nil {
-				log.Println("Error encoding entry:", err.Error())
-				continue
-			}
-			outPort.SendMessage(runtime.NewPacket(data))
-		}
-
-	}(*outputEndpoint, entries, exitCh)
-
 	err = resolver.Browse(options.Service, options.Domain, entries)
-	if err != nil {
-		exitCh <- syscall.SIGTERM
-	} else {
-		log.Println("Started...")
-		select {
-		case <-exitCh:
-			os.Exit(0)
+	utils.AssertError(err)
+
+	log.Println("Started...")
+	for e := range entries {
+		data, err := json.Marshal(e)
+		if err != nil {
+			log.Println("Error encoding entry:", err.Error())
+			continue
 		}
+		outPort.SendMessage(runtime.NewPacket(data))
 	}
 
 }

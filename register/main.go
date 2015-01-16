@@ -34,7 +34,7 @@ func validateArgs() {
 }
 
 func openPorts() {
-	inPort, err = utils.CreateInputPort(*inputEndpoint)
+	inPort, err = utils.CreateInputPort("bonjour/discover.options", *inputEndpoint, nil)
 	utils.AssertError(err)
 }
 

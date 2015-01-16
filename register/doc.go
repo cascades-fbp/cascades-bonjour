@@ -6,6 +6,7 @@ import (
 
 var registryEntry = &library.Entry{
 	Description: "Registers a service and announces it via DNS-SD",
+	Elementary:  true,
 	Inports: []library.EntryPort{
 		library.EntryPort{
 			Name:        "OPTIONS",
