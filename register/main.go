@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/signal"
 	"syscall"
 
 	"github.com/cascades-fbp/cascades/components/utils"
@@ -22,26 +23,11 @@ var (
 	debug         = flag.Bool("debug", false, "Enable debug mode")
 
 	// Internal
-	inPort *zmq.Socket
-	err    error
+	inPort    *zmq.Socket
+	bonjourCh chan<- bool
+	exitCh    chan os.Signal
+	err       error
 )
-
-func validateArgs() {
-	if *inputEndpoint == "" {
-		flag.Usage()
-		os.Exit(1)
-	}
-}
-
-func openPorts() {
-	inPort, err = utils.CreateInputPort("bonjour/discover.options", *inputEndpoint, nil)
-	utils.AssertError(err)
-}
-
-func closePorts() {
-	inPort.Close()
-	zmq.Term()
-}
 
 func main() {
 	flag.Parse()
@@ -61,10 +47,27 @@ func main() {
 
 	validateArgs()
 
+	// Communication channels
+	bonjourCh = make(chan bool, 1)
+	exitCh = make(chan os.Signal, 1)
+
+	// Start the communication & processing logic
+	go mainLoop()
+
+	// Wait for the end...
+	signal.Notify(exitCh, os.Interrupt, syscall.SIGTERM)
+	<-exitCh
+
+	// Shutdown registration gracefully
+	bonjourCh <- true
+
+	log.Println("Done")
+}
+
+// mainLoop initiates all ports and handles the traffic
+func mainLoop() {
 	openPorts()
 	defer closePorts()
-
-	ch := utils.HandleInterruption()
 
 	log.Println("Waiting for configuration IP...")
 	var options *bonjour.ServiceEntry
@@ -86,15 +89,35 @@ func main() {
 	}
 
 	log.Println("Started...")
-	stopCh, err := bonjour.Register(options.Instance, options.Service, options.Domain, options.Port, options.Text, nil)
+	var err error
+	bonjourCh, err = bonjour.Register(options.Instance, options.Service, options.Domain, options.Port, options.Text, nil)
 	if err != nil {
 		log.Println("Error registering service:", err.Error())
-		ch <- syscall.SIGTERM
+		exitCh <- syscall.SIGTERM
+		return
 	}
 
 	// Block execution
 	select {}
+}
 
-	// Shutdown registration gracefully
-	stopCh <- true
+// validateArgs checks all required flags
+func validateArgs() {
+	if *inputEndpoint == "" {
+		flag.Usage()
+		os.Exit(1)
+	}
+}
+
+// openPorts create ZMQ sockets and start socket monitoring loops
+func openPorts() {
+	inPort, err = utils.CreateInputPort("bonjour/discover.options", *inputEndpoint, nil)
+	utils.AssertError(err)
+}
+
+// closePorts closes all active ports and terminates ZMQ context
+func closePorts() {
+	log.Println("Closing ports...")
+	inPort.Close()
+	zmq.Term()
 }
